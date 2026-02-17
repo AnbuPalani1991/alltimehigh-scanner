@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ATH Scanner — All Indian Stocks</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=IBM+Plex+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#0A0800;--bg2:#0F0C00;--bg3:#161200;--bg4:#1C1700;
+    --gold:#D4A843;--gold2:#F0C060;--gold-dim:rgba(212,168,67,0.10);
+    --gold-glow:rgba(212,168,67,0.20);--cream:#F5EDD8;--text:#E8DFC8;
+    --muted:#6B5E3A;--dim:#3A3020;--border:rgba(212,168,67,0.12);
+    --border2:rgba(212,168,67,0.22);--green:#4ADE80;
+    --green-dim:rgba(74,222,128,0.10);--red:#F87171;
+    --serif:'Playfair Display',serif;--mono:'IBM Plex Mono',monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);font-family:var(--mono);min-height:100vh;overflow-x:hidden}
+  body::after{content:'';position:fixed;top:-10%;left:50%;transform:translateX(-50%);width:900px;height:300px;background:radial-gradient(ellipse,rgba(212,168,67,0.07) 0%,transparent 70%);pointer-events:none;z-index:0}
+  .wrap{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:0 28px 80px}
+  .topbar{display:flex;justify-content:space-between;align-items:center;padding:20px 0 14px;border-bottom:1px solid var(--border);margin-bottom:0}
+  .topbar-left{font-size:10px;color:var(--muted);letter-spacing:3px;text-transform:uppercase}
+  .topbar-right{display:flex;align-items:center;gap:20px;font-size:10px;color:var(--muted);letter-spacing:2px}
+  .live-dot{display:flex;align-items:center;gap:6px;color:var(--gold)}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--gold);animation:blink 2s infinite;box-shadow:0 0 6px var(--gold)}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+  .masthead{padding:52px 0 40px;border-bottom:1px solid var(--border);margin-bottom:36px;position:relative}
+  .masthead-eyebrow{font-size:10px;letter-spacing:4px;color:var(--gold);text-transform:uppercase;margin-bottom:16px}
+  .masthead-title{font-family:var(--serif);font-size:clamp(42px,6vw,72px);font-weight:900;line-height:0.95;color:var(--cream);margin-bottom:20px;letter-spacing:-1px}
+  .masthead-title span{color:var(--gold)}
+  .masthead-sub{font-size:12px;color:var(--muted);letter-spacing:1px;max-width:500px;line-height:1.8}
+  .masthead-stats{position:absolute;right:0;top:52px;display:flex;flex-direction:column;gap:16px;text-align:right}
+  .stat-value{font-family:var(--serif);font-size:32px;font-weight:700;color:var(--gold2);line-height:1}
+  .stat-label{font-size:9px;letter-spacing:3px;color:var(--muted);text-transform:uppercase;margin-top:4px}
+  .market-banner{display:flex;align-items:center;gap:10px;padding:12px 18px;border-radius:10px;font-size:11px;letter-spacing:1px;margin-bottom:20px}
+  .market-banner.open{background:rgba(74,222,128,0.06);border:1px solid rgba(74,222,128,0.15);color:var(--green)}
+  .market-banner.closed{background:rgba(212,168,67,0.06);border:1px solid var(--border);color:var(--muted)}
+  .controls{display:flex;gap:12px;margin-bottom:24px;align-items:center;flex-wrap:wrap}
+  .filter-tabs{display:flex;gap:2px;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:3px}
+  .tab{padding:7px 16px;font-family:var(--mono);font-size:11px;letter-spacing:1px;border:none;background:transparent;color:var(--muted);cursor:pointer;border-radius:8px;transition:all 0.2s}
+  .tab.active{background:var(--gold-dim);color:var(--gold);border:1px solid var(--border2)}
+  .search-box{display:flex;align-items:center;gap:8px;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:8px 14px}
+  .search-box input{background:none;border:none;outline:none;color:var(--text);font-family:var(--mono);font-size:12px;width:180px}
+  .search-box input::placeholder{color:var(--dim)}
+  .scan-btn{margin-left:auto;display:flex;align-items:center;gap:10px;background:var(--gold);color:var(--bg);border:none;border-radius:10px;padding:10px 24px;font-family:var(--serif);font-size:14px;font-weight:700;cursor:pointer;transition:all 0.2s}
+  .scan-btn:hover{background:var(--gold2);box-shadow:0 4px 24px var(--gold-glow);transform:translateY(-1px)}
+  .scan-btn:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+  .spinner{width:14px;height:14px;border:2px solid rgba(0,0,0,0.3);border-top-color:var(--bg);border-radius:50%;animation:spin 0.7s linear infinite;display:none}
+  .scan-btn.loading .spinner{display:block}
+  .scan-btn.loading .btn-text{display:none}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .progress-wrap{margin-bottom:28px;display:none}
+  .progress-wrap.visible{display:block}
+  .progress-label{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);letter-spacing:2px;margin-bottom:8px}
+  .progress-track{height:2px;background:var(--dim);border-radius:1px;overflow:hidden}
+  .progress-fill{height:100%;background:linear-gradient(90deg,var(--gold),var(--gold2));border-radius:1px;transition:width 0.5s ease;box-shadow:0 0 8px var(--gold-glow);width:0%}
+  .results-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:20px}
+  .results-title{font-family:var(--serif);font-size:22px;font-weight:700;color:var(--cream)}
+  .results-title span{color:var(--gold)}
+  .results-meta{font-size:10px;color:var(--muted);letter-spacing:2px}
+  .ath-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:40px}
+  .ath-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:16px 18px;transition:all 0.25s;position:relative;overflow:hidden;animation:cardIn 0.4s ease both}
+  .ath-card:hover{border-color:var(--border2);background:var(--bg3);transform:translateY(-2px);box-shadow:0 8px 32px rgba(0,0,0,0.4)}
+  .ath-card::after{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--gold),transparent);opacity:0.4}
+  @keyframes cardIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+  .card-exchange{font-size:9px;letter-spacing:2px;color:var(--muted);margin-bottom:8px}
+  .exch-badge{background:var(--gold-dim);border:1px solid rgba(212,168,67,0.2);color:var(--gold);padding:1px 6px;border-radius:4px;font-size:8px;letter-spacing:2px}
+  .card-symbol{font-family:var(--serif);font-size:18px;font-weight:700;color:var(--cream);margin-bottom:3px;line-height:1}
+  .card-name{font-size:10px;color:var(--muted);line-height:1.4;margin-bottom:12px;height:28px;overflow:hidden}
+  .card-ath-label{display:inline-flex;align-items:center;gap:6px;background:var(--green-dim);border:1px solid rgba(74,222,128,0.2);color:var(--green);padding:3px 8px;border-radius:6px;font-size:9px;letter-spacing:1px;font-weight:600}
+  .state-box{padding:80px 24px;text-align:center;border:1px solid var(--border);border-radius:20px;background:var(--bg2)}
+  .state-icon{font-family:var(--serif);font-size:64px;color:var(--dim);margin-bottom:20px;line-height:1}
+  .state-title{font-family:var(--serif);font-size:24px;color:var(--muted);margin-bottom:10px}
+  .state-sub{font-size:11px;color:var(--dim);letter-spacing:1px;line-height:1.8}
+  .divider{display:flex;align-items:center;gap:16px;margin:36px 0 28px}
+  .divider-line{flex:1;height:1px;background:var(--border)}
+  .divider-text{font-size:9px;letter-spacing:3px;color:var(--muted);text-transform:uppercase}
+  .log-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+  .log-title{padding:12px 20px;border-bottom:1px solid var(--border);font-size:9px;letter-spacing:3px;color:var(--muted);text-transform:uppercase;display:flex;align-items:center;gap:8px}
+  .log-body{padding:12px 20px;max-height:150px;overflow-y:auto;font-size:11px}
+  .log-entry{display:flex;gap:14px;padding:3px 0;animation:fadeUp 0.3s ease;border-bottom:1px solid rgba(255,255,255,0.02)}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+  .log-t{color:var(--dim);flex-shrink:0}
+  .log-ok{color:var(--gold)}.log-err{color:var(--red)}.log-inf{color:var(--muted)}.log-win{color:var(--green)}
+  ::-webkit-scrollbar{width:3px}
+  ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+  .last-scan{font-size:10px;color:var(--muted);letter-spacing:1px}
+  @media(max-width:700px){.masthead-stats{display:none}.masthead-title{font-size:38px}.ath-grid{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div class="topbar-left">NSE · BSE · All Listed Stocks · SME · Smallcap</div>
+    <div class="topbar-right">
+      <div class="live-dot"><div class="dot"></div> AGENT ACTIVE</div>
+      <div id="istTime">IST —:—</div>
+    </div>
+  </div>
+
+  <div class="masthead">
+    <div class="masthead-eyebrow">Daily Scan · End of Day · All Listed Equities</div>
+    <div class="masthead-title">All-Time<br><span>High</span> Scanner</div>
+    <div class="masthead-sub">Scans every NSE + BSE listed stock including SME, smallcap and midcap. Updated automatically at 3:31 PM IST every trading day.</div>
+    <div class="masthead-stats">
+      <div class="stat-block">
+        <div class="stat-value" id="athCount">—</div>
+        <div class="stat-label">ATH Stocks Today</div>
+      </div>
+      <div class="stat-block">
+        <div class="stat-value" id="totalScanned">—</div>
+        <div class="stat-label">Total Stocks Scanned</div>
+      </div>
+      <div class="stat-block">
+        <div class="stat-value" id="scanDate">—</div>
+        <div class="stat-label">Last Scan</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="market-banner closed" id="marketBanner">◈ Checking market status...</div>
+
+  <div class="controls">
+    <div class="filter-tabs">
+      <button class="tab active" onclick="setFilter('ALL',this)">ALL</button>
+      <button class="tab" onclick="setFilter('NSE',this)">NSE</button>
+      <button class="tab" onclick="setFilter('BSE',this)">BSE</button>
+    </div>
+    <div class="search-box">
+      <span style="color:var(--muted)">⌕</span>
+      <input type="text" id="searchInput" placeholder="Search symbol or name..." oninput="renderCards()">
+    </div>
+    <div class="last-scan" id="lastScanLabel">NOT YET SCANNED</div>
+    <button class="scan-btn" id="scanBtn" onclick="triggerScan()">
+      <div class="spinner"></div>
+      <span class="btn-text">⬡ Run Scan</span>
+    </button>
+  </div>
+
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-label">
+      <span id="progressLabel">SCANNING...</span>
+      <span id="progressPct">0%</span>
+    </div>
+    <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+  </div>
+
+  <div class="results-header" id="resultsHeader" style="display:none">
+    <div class="results-title"><span id="athCountBig">0</span> Stocks at All-Time High</div>
+    <div class="results-meta" id="resultsMeta"></div>
+  </div>
+
+  <div id="athGrid" class="ath-grid"></div>
+
+  <div class="state-box" id="emptyState">
+    <div class="state-icon">◈</div>
+    <div class="state-title">Ready to Scan</div>
+    <div class="state-sub">Click "Run Scan" to identify every NSE & BSE listed stock<br>trading at its all-time high. Includes SME, smallcap, midcap.</div>
+  </div>
+
+  <div class="divider"><div class="divider-line"></div><div class="divider-text">Agent Activity Log</div><div class="divider-line"></div></div>
+
+  <div class="log-wrap">
+    <div class="log-title"><div class="dot"></div> SCAN LOG</div>
+    <div class="log-body" id="logBody"></div>
+  </div>
+</div>
+
+<script>
+let allStocks = [];
+let currentFilter = 'ALL';
+let pollInterval = null;
+
+// ── INIT ───────────────────────────────────────────────────────────────
+window.onload = () => {
+  updateClock(); setInterval(updateClock, 1000);
+  updateMarketBanner();
+  loadResults();
+  setInterval(loadResults, 30000); // refresh every 30s
+};
+
+// ── CLOCK ──────────────────────────────────────────────────────────────
+function updateClock() {
+  const ist = new Date(Date.now() + 19800000);
+  const h = String(ist.getUTCHours()).padStart(2,'0');
+  const m = String(ist.getUTCMinutes()).padStart(2,'0');
+  const s = String(ist.getUTCSeconds()).padStart(2,'0');
+  document.getElementById('istTime').textContent = `IST ${h}:${m}:${s}`;
+}
+
+// ── MARKET STATUS ──────────────────────────────────────────────────────
+function updateMarketBanner() {
+  const ist = new Date(Date.now() + 19800000);
+  const day = ist.getUTCDay();
+  const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  const open = day >= 1 && day <= 5 && mins >= 555 && mins <= 930;
+  const banner = document.getElementById('marketBanner');
+  banner.className = 'market-banner ' + (open ? 'open' : 'closed');
+  banner.textContent = open
+    ? '◈ Market Open — Auto-scan will run at 3:31 PM IST'
+    : '◈ Market Closed — Showing last end-of-day scan';
+}
+
+// ── LOAD RESULTS ───────────────────────────────────────────────────────
+async function loadResults() {
+  try {
+    const r = await fetch('/api/results');
+    const data = await r.json();
+    if (data.stocks && data.stocks.length > 0) {
+      allStocks = data.stocks;
+      document.getElementById('athCount').textContent = data.ath_count;
+      document.getElementById('totalScanned').textContent = (data.total_scanned || 0).toLocaleString('en-IN');
+      document.getElementById('scanDate').textContent = data.scan_date || '—';
+      document.getElementById('lastScanLabel').textContent = `LAST SCAN: ${data.scan_date} ${data.scan_time}`;
+      renderCards();
+    }
+  } catch(e) { console.error('Load results error:', e); }
+}
+
+// ── TRIGGER SCAN ───────────────────────────────────────────────────────
+async function triggerScan() {
+  const btn = document.getElementById('scanBtn');
+  btn.disabled = true; btn.classList.add('loading');
+  document.getElementById('progressWrap').classList.add('visible');
+  document.getElementById('emptyState').style.display = 'none';
+
+  uiLog('Triggering scan of all NSE + BSE stocks...', 'inf');
+
+  try {
+    await fetch('/api/scan', { method: 'POST' });
+    pollInterval = setInterval(pollStatus, 2000);
+  } catch(e) {
+    uiLog('Failed to start scan: ' + e.message, 'err');
+    btn.disabled = false; btn.classList.remove('loading');
+  }
+}
+
+// ── POLL STATUS ────────────────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+
+    const pct = s.total > 0 ? Math.round((s.progress / s.total) * 100) : 0;
+    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('progressPct').textContent = pct + '%';
+    document.getElementById('progressLabel').textContent = s.message || 'Scanning...';
+
+    if (s.found > 0) {
+      document.getElementById('athCount').textContent = s.found;
+    }
+
+    if (!s.running) {
+      clearInterval(pollInterval);
+      document.getElementById('scanBtn').disabled = false;
+      document.getElementById('scanBtn').classList.remove('loading');
+      document.getElementById('progressWrap').classList.remove('visible');
+      uiLog(s.message, 'ok');
+      await loadResults();
+    }
+  } catch(e) { console.error('Poll error:', e); }
+}
+
+// ── RENDER CARDS ───────────────────────────────────────────────────────
+function renderCards() {
+  const query = document.getElementById('searchInput').value.toLowerCase();
+  const filtered = allStocks.filter(s => {
+    const exchOk = currentFilter === 'ALL' || s.exchange === currentFilter;
+    const searchOk = !query ||
+      s.symbol.toLowerCase().includes(query) ||
+      (s.name || '').toLowerCase().includes(query);
+    return exchOk && searchOk;
+  });
+
+  document.getElementById('athCountBig').textContent = filtered.length;
+  document.getElementById('resultsMeta').textContent =
+    `${currentFilter === 'ALL' ? 'NSE + BSE' : currentFilter} · ${filtered.length} stocks`;
+  document.getElementById('resultsHeader').style.display = filtered.length > 0 ? 'flex' : 'none';
+  document.getElementById('emptyState').style.display = filtered.length === 0 && allStocks.length === 0 ? 'block' : 'none';
+
+  document.getElementById('athGrid').innerHTML = filtered.map((s, i) => {
+    const sym = s.symbol.replace('.NS','').replace('.BO','');
+    return `<div class="ath-card" style="animation-delay:${Math.min(i,50)*0.03}s">
+      <div class="card-exchange"><span class="exch-badge">${s.exchange}</span></div>
+      <div class="card-symbol">${sym}</div>
+      <div class="card-name">${s.name || ''}</div>
+      <div class="card-ath-label">★ ALL-TIME HIGH</div>
+    </div>`;
+  }).join('');
+}
+
+// ── FILTER ─────────────────────────────────────────────────────────────
+function setFilter(f, el) {
+  currentFilter = f;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  renderCards();
+}
+
+// ── UI LOG ─────────────────────────────────────────────────────────────
+function uiLog(msg, type) {
+  const body = document.getElementById('logBody');
+  const now = new Date().toLocaleTimeString('en-IN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const el = document.createElement('div');
+  el.className = 'log-entry';
+  el.innerHTML = `<span class="log-t">${now}</span><span class="log-${type}">${msg}</span>`;
+  body.prepend(el);
+  while (body.children.length > 30) body.removeChild(body.lastChild);
+}
+</script>
+</body>
+</html>

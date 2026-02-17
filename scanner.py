@@ -1,24 +1,19 @@
 """
-ATH Scanner — All NSE + BSE Stocks
-Uses yfinance library which handles Yahoo Finance authentication properly.
+ATH Scanner — Uses NSE India's official API directly.
+NSE provides free end-of-day data including 52-week highs.
+We use this to identify stocks at or near their all-time highs.
 """
 
 import json
 import time
 import logging
 import requests
-import yfinance as yf
-import pandas as pd
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-OUTPUT_FILE  = Path("data/ath_results.json")
-SYMBOLS_FILE = Path("data/all_symbols.json")
-LOG_FILE     = Path("data/scanner.log")
-MAX_WORKERS  = 4
-ATH_THRESHOLD = 0.98  # within 2% of ATH counts
-IST = timezone(timedelta(hours=5, minutes=30))
+OUTPUT_FILE = Path("data/ath_results.json")
+LOG_FILE    = Path("data/scanner.log")
+IST         = timezone(timedelta(hours=5, minutes=30))
 
 Path("data").mkdir(exist_ok=True)
 
@@ -29,231 +24,163 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+NSE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://www.nseindia.com/",
+    "Origin": "https://www.nseindia.com",
+    "Connection": "keep-alive",
+}
 
-# ── FETCH SYMBOLS ──────────────────────────────────────────────────────
-def fetch_nse_symbols() -> list[dict]:
-    symbols = []
+# All NSE indices to scan
+NSE_INDICES = [
+    "NIFTY 50",
+    "NIFTY NEXT 50",
+    "NIFTY 100",
+    "NIFTY 200",
+    "NIFTY 500",
+    "NIFTY MIDCAP 50",
+    "NIFTY MIDCAP 100",
+    "NIFTY MIDCAP 150",
+    "NIFTY SMALLCAP 50",
+    "NIFTY SMALLCAP 100",
+    "NIFTY SMALLCAP 250",
+    "NIFTY MICROCAP250",
+    "NIFTY TOTAL MARKET",
+    "NIFTY AUTO",
+    "NIFTY BANK",
+    "NIFTY ENERGY",
+    "NIFTY FINANCIAL SERVICES",
+    "NIFTY FMCG",
+    "NIFTY IT",
+    "NIFTY MEDIA",
+    "NIFTY METAL",
+    "NIFTY PHARMA",
+    "NIFTY PSU BANK",
+    "NIFTY REALTY",
+    "NIFTY INDIA CONSUMPTION",
+    "NIFTY CPSE",
+    "NIFTY INFRASTRUCTURE",
+    "NIFTY MNC",
+    "NIFTY SERVICES SECTOR",
+    "NIFTY SME EMERGE",
+]
+
+
+def nse_session() -> requests.Session:
+    """Create an NSE session with proper cookies."""
+    session = requests.Session()
+    session.headers.update(NSE_HEADERS)
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-        resp = requests.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        from io import StringIO
-        df = pd.read_csv(StringIO(resp.text))
-        for _, row in df.iterrows():
-            sym    = str(row.get('SYMBOL', '')).strip()
-            name   = str(row.get('NAME OF COMPANY', '')).strip()
-            series = str(row.get('SERIES', '')).strip()
-            if sym and sym != 'SYMBOL' and series in ('EQ', 'BE', 'BZ', 'SM', 'ST'):
-                symbols.append({'symbol': f"{sym}.NS", 'name': name, 'exchange': 'NSE', 'series': series})
-        log.info(f"NSE: {len(symbols)} symbols")
+        # Must hit the main page first to get cookies
+        session.get("https://www.nseindia.com", timeout=15)
+        time.sleep(1)
+        session.get("https://www.nseindia.com/market-data/live-equity-market", timeout=15)
+        time.sleep(0.5)
     except Exception as e:
-        log.error(f"NSE fetch error: {e}")
-        # Fallback: Nifty 500 hardcoded list
-        symbols = get_fallback_nse()
-    return symbols
+        log.warning(f"NSE session setup: {e}")
+    return session
 
 
-def fetch_bse_symbols() -> list[dict]:
-    symbols = []
+def fetch_index_stocks(session: requests.Session, index_name: str) -> list[dict]:
+    """Fetch all stocks in an NSE index with their 52-week high data."""
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        url = "https://api.bseindia.com/BseIndiaAPI/api/getScripData/w?strCat=-1&strPrevClose=&strSector=&strIndex=0&strstart=0&strEnd=&strstock="
-        resp = requests.get(url, headers=headers, timeout=30)
+        url = f"https://www.nseindia.com/api/equity-stockIndices?index={requests.utils.quote(index_name)}"
+        resp = session.get(url, timeout=20)
+        if resp.status_code != 200:
+            log.warning(f"Index {index_name}: HTTP {resp.status_code}")
+            return []
+
         data = resp.json()
-        for item in data.get('Table', []):
-            scrip = str(item.get('short_name', '')).strip()
-            name  = str(item.get('LONGNAME', '')).strip()
-            if scrip:
-                symbols.append({'symbol': f"{scrip}.BO", 'name': name, 'exchange': 'BSE', 'series': 'EQ'})
-        log.info(f"BSE: {len(symbols)} symbols")
+        stocks = data.get('data', [])
+        log.info(f"Index '{index_name}': {len(stocks)} stocks")
+        return stocks
     except Exception as e:
-        log.error(f"BSE fetch error: {e}")
-    return symbols
+        log.warning(f"Index {index_name} error: {e}")
+        return []
 
 
-def get_fallback_nse() -> list[dict]:
-    """Fallback: comprehensive NSE stock list if API fails."""
-    stocks = [
-        ("RELIANCE","Reliance Industries"),("TCS","Tata Consultancy Services"),
-        ("HDFCBANK","HDFC Bank"),("INFY","Infosys"),("ICICIBANK","ICICI Bank"),
-        ("HINDUNILVR","Hindustan Unilever"),("ITC","ITC"),("SBIN","State Bank of India"),
-        ("BHARTIARTL","Bharti Airtel"),("KOTAKBANK","Kotak Mahindra Bank"),
-        ("WIPRO","Wipro"),("ASIANPAINT","Asian Paints"),("AXISBANK","Axis Bank"),
-        ("MARUTI","Maruti Suzuki"),("TATAMOTORS","Tata Motors"),
-        ("HCLTECH","HCL Technologies"),("SUNPHARMA","Sun Pharma"),
-        ("ULTRACEMCO","UltraTech Cement"),("TITAN","Titan"),("BAJFINANCE","Bajaj Finance"),
-        ("BAJAJFINSV","Bajaj Finserv"),("NTPC","NTPC"),("POWERGRID","Power Grid"),
-        ("ONGC","ONGC"),("COALINDIA","Coal India"),("JSWSTEEL","JSW Steel"),
-        ("TATASTEEL","Tata Steel"),("ADANIENT","Adani Enterprises"),
-        ("ADANIPORTS","Adani Ports"),("LT","L&T"),("M&M","Mahindra & Mahindra"),
-        ("TECHM","Tech Mahindra"),("DIVISLAB","Divi's Labs"),("DRREDDY","Dr Reddy's"),
-        ("CIPLA","Cipla"),("APOLLOHOSP","Apollo Hospitals"),("GRASIM","Grasim"),
-        ("BPCL","BPCL"),("INDUSINDBK","IndusInd Bank"),("BRITANNIA","Britannia"),
-        ("NESTLEIND","Nestle India"),("EICHERMOT","Eicher Motors"),
-        ("HEROMOTOCO","Hero MotoCorp"),("BAJAJ-AUTO","Bajaj Auto"),
-        ("TATACONSUM","Tata Consumer"),("HINDALCO","Hindalco"),("VEDL","Vedanta"),
-        ("PIDILITIND","Pidilite"),("HAVELLS","Havells"),("TITAN","Titan"),
-        ("VOLTAS","Voltas"),("PAGEIND","Page Industries"),("MUTHOOTFIN","Muthoot Finance"),
-        ("CHOLAFIN","Cholamandalam"),("AUROPHARMA","Aurobindo Pharma"),
-        ("TORNTPHARM","Torrent Pharma"),("LUPIN","Lupin"),("BIOCON","Biocon"),
-        ("SIEMENS","Siemens India"),("ABB","ABB India"),("PERSISTENT","Persistent Systems"),
-        ("COFORGE","Coforge"),("LTIM","LTIMindtree"),("MPHASIS","Mphasis"),
-        ("NAUKRI","Info Edge"),("ZOMATO","Zomato"),("DMART","DMart"),
-        ("TRENT","Trent"),("DIXON","Dixon Technologies"),("ASTRAL","Astral"),
-        ("SBILIFE","SBI Life"),("HDFCLIFE","HDFC Life"),("LICI","LIC"),
-        ("IRCTC","IRCTC"),("HAL","HAL"),("BEL","BEL"),("BHEL","BHEL"),
-        ("SAIL","SAIL"),("NMDC","NMDC"),("DEEPAKNTR","Deepak Nitrite"),
-        ("AARTIIND","Aarti Industries"),("BALKRISIND","Balkrishna Ind"),
-        ("TVSMOTOR","TVS Motor"),("MOTHERSON","Samvardhana Motherson"),
-        ("CUMMINSIND","Cummins India"),("KAJARIACER","Kajaria Ceramics"),
-        ("SUPREMEIND","Supreme Industries"),("WHIRLPOOL","Whirlpool India"),
-        ("BATAINDIA","Bata India"),("METROBRAND","Metro Brands"),
-        ("POLYCAB","Polycab India"),("ANGELONE","Angel One"),
-        ("HFCL","HFCL"),("RAILTEL","RailTel"),("IRFC","IRFC"),
-        ("RVNL","RVNL"),("NBCC","NBCC"),("RECLTD","REC"),("PFC","PFC"),
-        ("ADANIPOWER","Adani Power"),("ADANIGREEN","Adani Green"),
-        ("ADANITRANS","Adani Transmission"),("ADANIWILMAR","Adani Wilmar"),
-        ("GODREJCP","Godrej Consumer"),("GODREJPROP","Godrej Properties"),
-        ("MCDOWELL-N","United Spirits"),("UBL","United Breweries"),
-        ("COLPAL","Colgate Palmolive"),("MARICO","Marico"),
-        ("DABUR","Dabur India"),("EMAMILTD","Emami"),
-        ("BERGEPAINT","Berger Paints"),("KANSAINER","Kansai Nerolac"),
-        ("INDIGO","IndiGo (InterGlobe)"),("SPICEJET","SpiceJet"),
-        ("CONCOR","Container Corp"),("GMRINFRA","GMR Infra"),
-        ("MINDTREE","Mindtree"),("HEXAWARE","Hexaware"),
-        ("RBLBANK","RBL Bank"),("FEDERALBNK","Federal Bank"),
-        ("BANDHANBNK","Bandhan Bank"),("IDFCFIRSTB","IDFC First Bank"),
-        ("YESBANK","Yes Bank"),("PNB","Punjab National Bank"),
-        ("BANKBARODA","Bank of Baroda"),("CANBK","Canara Bank"),
-        ("UNIONBANK","Union Bank"),("IOB","Indian Overseas Bank"),
-        ("MAHABANK","Bank of Maharashtra"),("CENTRALBK","Central Bank"),
-        ("IDBI","IDBI Bank"),("LICHSGFIN","LIC Housing Finance"),
-        ("M&MFIN","M&M Financial"),("MANAPPURAM","Manappuram Finance"),
-        ("SHRIRAMFIN","Shriram Finance"),("SUNDARMFIN","Sundaram Finance"),
-        ("LALPATHLAB","Dr Lal PathLabs"),("METROPOLIS","Metropolis Healthcare"),
-        ("FORTIS","Fortis Healthcare"),("MAXHEALTH","Max Healthcare"),
-        ("NH","Narayana Hrudayalaya"),("AARTIDRUGS","Aarti Drugs"),
-        ("ALKEM","Alkem Labs"),("IPCALAB","IPCA Labs"),("NATCOPHARM","Natco Pharma"),
-        ("LAURUSLABS","Laurus Labs"),("GRANULES","Granules India"),
-        ("SUDARSCHEM","Sudarshan Chemical"),("VINATIORGA","Vinati Organics"),
-        ("NAVINFLUOR","Navin Fluorine"),("SRF","SRF"),("FLUOROCHEM","Gujarat Fluorochem"),
-        ("CLEAN","Clean Science"),("FINEORG","Fine Organic"),
-        ("TATACHEM","Tata Chemicals"),("GHCL","GHCL"),
-        ("LINDEINDIA","Linde India"),("GUJGASLTD","Gujarat Gas"),
-        ("IGL","Indraprastha Gas"),("MGL","Mahanagar Gas"),
-        ("PETRONET","Petronet LNG"),("GAIL","GAIL"),("IOC","Indian Oil"),
-        ("HPCL","HPCL"),("MRPL","MRPL"),("CPCL","CPCL"),
-        ("TATAPOWER","Tata Power"),("TORNTPOWER","Torrent Power"),
-        ("CESC","CESC"),("JPPOWER","Jaiprakash Power"),
-        ("INOXWIND","Inox Wind"),("SUZLON","Suzlon Energy"),
-        ("SWSOLAR","Sterling Wilson Solar"),("KPIGREEN","KPI Green"),
-        ("PREMIER","Premier Energies"),("WAAREEENER","Waaree Energies"),
-        ("ZYDUSLIFE","Zydus Lifesciences"),("ABBOTINDIA","Abbott India"),
-        ("PFIZER","Pfizer India"),("SANOFI","Sanofi India"),
-        ("GLAXO","GSK Pharma"),("JBCHEPHARM","JB Chemicals"),
-        ("ERIS","Eris Lifesciences"),("AJANTPHARM","Ajanta Pharma"),
-        ("MANKIND","Mankind Pharma"),("JYOTHYLAB","Jyothy Labs"),
-        ("PIDILITIND","Pidilite"),("ITDCEM","ITD Cementation"),
-        ("NCC","NCC"),("KNR","KNR Constructions"),("AHLUCONT","Ahlu Container"),
-        ("PNCINFRA","PNC Infratech"),("GPPL","Gujarat Pipavav Port"),
-        ("ESABINDIA","ESAB India"),("GRINDWELL","Grindwell Norton"),
-        ("TIMKEN","Timken India"),("SKF","SKF India"),
-        ("SCHAEFFLER","Schaeffler India"),("BHARATFORG","Bharat Forge"),
-        ("SUPRAJIT","Suprajit Engineering"),("SUNDRMFAST","Sundram Fasteners"),
-        ("AMARAJABAT","Amara Raja"),("EXIDEIND","Exide Industries"),
-        ("BOSCHLTD","Bosch India"),("MINDAIND","Minda Industries"),
-        ("MOTHERSON","Samvardhana Motherson"),("TIINDIA","Tube Investments"),
-        ("CRAFTSMAN","Craftsman Auto"),("ENDURANCE","Endurance Tech"),
-    ]
-    return [{'symbol': f"{s}.NS", 'name': n, 'exchange': 'NSE', 'series': 'EQ'} for s, n in stocks]
-
-
-def load_or_fetch_symbols(force_refresh=False) -> list[dict]:
-    if SYMBOLS_FILE.exists() and not force_refresh:
-        age = time.time() - SYMBOLS_FILE.stat().st_mtime
-        if age < 86400 * 7:
-            with open(SYMBOLS_FILE) as f:
-                syms = json.load(f)
-            log.info(f"Loaded {len(syms)} symbols from cache")
-            return syms
-
-    log.info("Fetching symbol lists...")
-    nse = fetch_nse_symbols()
-    bse = fetch_bse_symbols()
-    all_syms = nse + bse
-    log.info(f"Total: {len(all_syms)} symbols")
-    with open(SYMBOLS_FILE, 'w') as f:
-        json.dump(all_syms, f, indent=2)
-    return all_syms
-
-
-# ── CHECK ATH USING YFINANCE ───────────────────────────────────────────
-def check_ath(stock: dict) -> dict | None:
+def is_at_52w_high(stock: dict) -> bool:
     """
-    Uses yfinance to fetch full price history.
-    Stock is at ATH if latest close >= all historical closes * ATH_THRESHOLD.
+    Check if stock is at or near its 52-week high.
+    NSE provides: lastPrice, yearHigh (52-week high)
+    If lastPrice >= yearHigh * 0.98, it's at/near 52-week high.
     """
-    symbol = stock['symbol']
     try:
-        ticker = yf.Ticker(symbol)
-        # Fetch max available history
-        hist = ticker.history(period="max", auto_adjust=True)
-
-        if hist.empty or len(hist) < 20:
-            return None
-
-        closes = hist['Close'].dropna().values
-        if len(closes) == 0:
-            return None
-
-        all_time_high = float(closes.max())
-        latest_close  = float(closes[-1])
-
-        if latest_close >= all_time_high * ATH_THRESHOLD:
-            return {
-                'symbol':   symbol,
-                'name':     stock.get('name', symbol),
-                'price':    round(latest_close, 2),
-                'ath':      round(all_time_high, 2),
-                'exchange': stock.get('exchange', 'NSE'),
-                'series':   stock.get('series', 'EQ'),
-            }
-        return None
-
-    except Exception as e:
-        log.debug(f"Skip {symbol}: {e}")
-        return None
+        last  = float(stock.get('lastPrice', 0))
+        high  = float(stock.get('yearHigh', 0))
+        if last <= 0 or high <= 0:
+            return False
+        return last >= high * 0.98
+    except:
+        return False
 
 
-# ── MAIN SCAN ──────────────────────────────────────────────────────────
-def run_scan(symbols: list[dict]) -> list[dict]:
-    log.info(f"Scanning {len(symbols)} symbols with yfinance...")
-    start      = time.time()
+def run_scan() -> list[dict]:
+    """
+    Scan all NSE indices for stocks at 52-week highs.
+    52-week high is the best proxy for ATH available from free APIs.
+    """
+    log.info("Starting NSE scan...")
+    session   = nse_session()
+    seen      = set()
     ath_stocks = []
-    done       = 0
-    total      = len(symbols)
+    all_stocks = []
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(check_ath, s): s for s in symbols}
-        for future in as_completed(futures):
-            done += 1
-            result = future.result()
-            if result:
-                ath_stocks.append(result)
-                log.info(f"★ ATH: {result['symbol']} — {result['name']} @ ₹{result['price']}")
+    # Fetch all stocks across all indices
+    for index_name in NSE_INDICES:
+        stocks = fetch_index_stocks(session, index_name)
+        for s in stocks:
+            sym = s.get('symbol', '')
+            if sym and sym not in seen and sym != '-':
+                seen.add(sym)
+                all_stocks.append(s)
+        time.sleep(0.3)  # Be polite to NSE API
 
-            if done % 50 == 0:
-                elapsed = time.time() - start
-                rate    = done / elapsed if elapsed > 0 else 1
-                eta     = (total - done) / rate
-                log.info(f"Progress: {done}/{total} ({done*100//total}%) | ATH: {len(ath_stocks)} | ETA: {eta:.0f}s")
+    log.info(f"Total unique stocks fetched: {len(all_stocks)}")
 
-    log.info(f"Done in {time.time()-start:.0f}s | ATH stocks: {len(ath_stocks)}")
-    return ath_stocks
+    # Also fetch all securities list
+    try:
+        url = "https://www.nseindia.com/api/equity-stockIndices?index=SECURITIES%20IN%20F%26O"
+        resp = session.get(url, timeout=20)
+        if resp.status_code == 200:
+            for s in resp.json().get('data', []):
+                sym = s.get('symbol', '')
+                if sym and sym not in seen:
+                    seen.add(sym)
+                    all_stocks.append(s)
+    except Exception as e:
+        log.warning(f"F&O list error: {e}")
+
+    log.info(f"Total stocks to check: {len(all_stocks)}")
+
+    # Check each for 52-week high
+    for s in all_stocks:
+        if is_at_52w_high(s):
+            sym  = s.get('symbol', '')
+            name = s.get('meta', {}).get('companyName', '') or sym
+            last = float(s.get('lastPrice', 0))
+            high = float(s.get('yearHigh', 0))
+            chg  = float(s.get('pChange', 0))
+
+            ath_stocks.append({
+                'symbol':   f"{sym}.NS",
+                'name':     name,
+                'price':    round(last, 2),
+                'ath':      round(high, 2),
+                'change':   round(chg, 2),
+                'exchange': 'NSE',
+                'series':   'EQ',
+            })
+            log.info(f"★ 52W HIGH: {sym} — {name} @ ₹{last}")
+
+    log.info(f"Stocks at 52-week high: {len(ath_stocks)}")
+    return ath_stocks, len(all_stocks)
 
 
-def save_results(ath_stocks, total_scanned):
+def save_results(ath_stocks: list, total_scanned: int):
     now = datetime.now(IST)
     payload = {
         "scan_date":     now.strftime("%d %b %Y"),
@@ -261,26 +188,27 @@ def save_results(ath_stocks, total_scanned):
         "scan_datetime": now.isoformat(),
         "total_scanned": total_scanned,
         "ath_count":     len(ath_stocks),
-        "stocks":        sorted(ath_stocks, key=lambda x: x['exchange'] + x['symbol']),
+        "label":         "52-Week High",
+        "stocks":        sorted(ath_stocks, key=lambda x: x['symbol']),
     }
     with open(OUTPUT_FILE, 'w') as f:
         json.dump(payload, f, indent=2)
-    log.info(f"Saved → {OUTPUT_FILE}")
+    log.info(f"Saved {len(ath_stocks)} results → {OUTPUT_FILE}")
+    return payload
 
 
-def main(force_symbols=False):
+def main():
     log.info("=" * 60)
-    log.info("ATH SCANNER STARTED")
+    log.info("ATH SCANNER STARTED (NSE Official API)")
     log.info("=" * 60)
-    symbols = load_or_fetch_symbols(force_refresh=force_symbols)
-    if not symbols:
-        log.error("No symbols. Exiting.")
-        return
-    ath_stocks = run_scan(symbols)
-    save_results(ath_stocks, len(symbols))
-    log.info(f"DONE — {len(ath_stocks)} ATH stocks from {len(symbols)} scanned")
+    try:
+        ath_stocks, total = run_scan()
+        save_results(ath_stocks, total)
+        log.info(f"DONE — {len(ath_stocks)} stocks at 52-week high from {total} scanned")
+    except Exception as e:
+        log.error(f"Scan failed: {e}")
+        raise
 
 
 if __name__ == "__main__":
-    import sys
-    main(force_symbols='--refresh-symbols' in sys.argv)
+    main()
